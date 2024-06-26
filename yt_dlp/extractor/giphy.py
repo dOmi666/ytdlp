@@ -97,11 +97,11 @@ class GiphyBaseIE(InfoExtractor):
             'subtitles': subtitles,
         }
 
-    def _api_channel_feed(self, channel_id, max_offset=_GIPHY_MAX):    # offset cannot exceed 5000
+    def _api_channel_feed(self, channel_id, max_offset=_GIPHY_MAX):
         offset = 0
         query_url = f'https://giphy.com/api/v4/channels/{channel_id}/feed/?offset={offset}'
         for _ in itertools.count(1):
-            search_results = self._download_json(query_url, channel_id,
+            search_results = self._download_json(query_url, channel_id, fatal=False,
                                                  note=f'Fetching feed {offset + 1}-{offset + 25}')
             if not search_results.get('results'):
                 return
@@ -110,9 +110,10 @@ class GiphyBaseIE(InfoExtractor):
                     **self._extract_info(video, video['id']),
                     'webpage_url': video['url'],
                 }
-            offset += len(search_results['results'])
-            query_url = url_or_none(search_results.get('next'))
-            if not query_url or offset > max_offset:
+            query_url = url_or_none(search_results.get('next')) or ''
+            offset = int(self._search_regex(r'offset=(\d+)', query_url, 'offset', default=0))
+            # offset cannot exceed 5000
+            if not query_url or offset > min((max_offset or self._GIPHY_MAX) + 1, self._GIPHY_MAX):
                 return
 
 
@@ -164,12 +165,12 @@ class GiphyIE(GiphyBaseIE):
             'ext': 'mp4',
             'title': 'You Can\'t Break Up With Me',
             'description': 'South Park, Season 20, Episode 4, Wieners Out',
-            'tags': 'count:17',
+            'tags': 'count:16',
             'thumbnail': r're:^https?://.*',
             'upload_date': '20220516',
             'uploader': 'South Park',
             'uploader_id': 'southpark',
-            'uploader_url': 'https://giphy.com/southpark/',
+            'uploader_url': 'https://giphy.com/southpark',
         },
     }, {
         'url': 'https://giphy.com/embed/00xGP4zv8xENZ2tc3Y',
@@ -234,7 +235,8 @@ class GiphyIE(GiphyBaseIE):
     }]
 
     def _real_extract(self, url):
-        webpage = self._download_webpage(url, 'giphy')
+        video_id = self._match_id(url)
+        webpage = self._download_webpage(url.replace('/embed/', '/gifs/'), video_id)
 
         # {"channelId": ...}
         if channel_id := self._html_search_regex(r'\{"channelId":\s*([^\}]+)\}', webpage, 'channel_id', default=None):
@@ -248,18 +250,15 @@ class GiphyIE(GiphyBaseIE):
                 'title': (self._html_search_meta('twitter:title', webpage)
                           or self._og_search_title(webpage)
                           ).replace(' GIFs on GIPHY - Be Animated', '').strip(),
-                'uploader_id': self._html_search_meta('twitter:creator', webpage).replace('@', '').lower(),
+                'uploader_id': uploader_id,
                 'uploader_url': f'https://giphy.com/channel/{uploader_id}' if uploader_id != 'giphy' else None,
                 '_type': 'playlist',
                 'entries': entries,
             }
         else:
-            video_id = self._match_id(url)
-            webpage = self._download_webpage(f'https://giphy.com/gifs/{video_id}', video_id)
-
-            title = (self._html_search_meta('twitter:title', webpage)
+            title = (self._html_search_meta('twitter:title', webpage, default=None)
                      or self._og_search_title(webpage).replace(' - Find & Share on GIPHY', '').strip())
-            description = (self._html_search_meta('twitter:description', webpage)
+            description = (self._html_search_meta('twitter:description', webpage, default=None)
                            or self._og_search_description(webpage))
             description = description if not description.startswith('Discover & share') else None
 
@@ -268,31 +267,31 @@ class GiphyIE(GiphyBaseIE):
                                                    webpage, 'video_data', default=None):
                 gif_data = self._parse_json(json_str.encode('utf-8').decode('unicode_escape'), video_id)
             # gif: {"id":...},
-            elif json_str := self._html_search_regex(r'\s+\w+:\s*({".*?}),\n\s+', webpage, 'video_data', default={}):
+            elif json_str := self._html_search_regex(r'\s+\w+:\s*({".*?}),\n\s+', webpage, 'video_data', default='{}'):
                 gif_data = self._parse_json(json_str, video_id)
 
             info = self._extract_info(gif_data, video_id)
 
             if not info.get('formats'):
                 formats = []
-                if url := self._og_search_video_url(webpage):
+                if url := self._og_search_video_url(webpage, default=None):
                     formats.append({
                         'format_id': determine_ext(url),
                         'width': int_or_none(self._og_search_property('video:width', webpage)),
                         'height': int_or_none(self._og_search_property('video:height', webpage)),
                         'url': url,
                     })
-                if url := self._og_search_thumbnail(webpage):
+                if url := self._og_search_thumbnail(webpage, default=None):
                     formats.append({
                         'format_id': determine_ext(url),
                         'width': int_or_none(self._og_search_property('image:width', webpage)),
                         'height': int_or_none(self._og_search_property('image:height', webpage)),
                         'url': url,
                     })
-                if url := self._html_search_meta('twitter:image', webpage):
+                if url := self._html_search_meta('twitter:image', webpage, default=None):
                     thumbnails = [{
-                        'width': int_or_none(self._html_search_meta('twitter:image:width', webpage)),
-                        'height': int_or_none(self._html_search_meta('twitter:image:height', webpage)),
+                        'width': int_or_none(self._html_search_meta('twitter:image:width', webpage, default=None)),
+                        'height': int_or_none(self._html_search_meta('twitter:image:height', webpage, default=None)),
                         'url': url,
                     }]
                 info['formats'] = formats
@@ -386,7 +385,7 @@ class GiphySearchIE(GiphyBaseIE, SearchInfoExtractor):
             return self._download_json(
                 f'https://api.giphy.com/v1/{category}/search', query,
                 note=f'Fetching {category} result {offset + 1}-{offset + limit}', query={
-                    'rating': 'pg-13',
+                    'rating': 'r',      # MPA film rating
                     'offset': offset,
                     'limit': limit,
                     'type': category,   # known types: 'gifs', 'stickers', 'text', 'videos'
@@ -396,12 +395,12 @@ class GiphySearchIE(GiphyBaseIE, SearchInfoExtractor):
                 })
 
         # type: comma delimited list
-        types = self._search_regex(r'&type=([^&]+)', query, 'type', default='gifs,videos')
+        types = self._search_regex(r'&type=([^&]+)', query, 'type', default='gifs,stickers,videos')
         types = [(f'{x}s' if x[-1] != 's' and any(x in t for t in ['gifs', 'stickers', 'videos']) else x)
                  for x in [x.strip() for x in types.lower().split(',')]]
         query = query.split('&type=')[0]
 
-        offset, limit = 0, 15       # 'offset' max: 5000, 'limit' max: 100
+        offset, limit = 0, 50
         types_done = []
         for _ in itertools.count(1):
             for t in types:
@@ -422,7 +421,7 @@ class GiphySearchIE(GiphyBaseIE, SearchInfoExtractor):
                             types_done.append(t)
             if len(types) > len(types_done):
                 offset += limit
-                if offset > self._GIPHY_MAX:
+                if offset >= self._GIPHY_MAX:
                     return
             else:
                 return
@@ -478,8 +477,7 @@ class GiphyStoriesIE(GiphyBaseIE):
     def _real_extract(self, url):
         slug = self._match_id(url)
         # https://x.giphy.com/v1/stories/slug/{slug}?api_key=3eFQvabDx69SMoOemSPiYfh9FY0nzO9x
-        story = self._download_json(f'https://x.giphy.com/v1/stories/slug/{slug}?api_key={self._GIPHY_FE_STORIES_AND_GIPHY_TV_API_KEY}',
-                                    slug, note=f'Extracting URL: {url}')
+        story = self._download_json(f'https://x.giphy.com/v1/stories/slug/{slug}?api_key={self._GIPHY_FE_STORIES_AND_GIPHY_TV_API_KEY}', slug)
 
         if data := story.get('data'):
             entries = []

@@ -4,6 +4,7 @@ import collections
 import copy
 import datetime as dt
 import enum
+import functools
 import hashlib
 import itertools
 import json
@@ -20,7 +21,6 @@ import urllib.parse
 
 from .common import InfoExtractor, SearchInfoExtractor
 from .openload import PhantomJSwrapper
-from ..compat import functools
 from ..jsinterp import JSInterpreter
 from ..networking.exceptions import HTTPError, network_exceptions
 from ..utils import (
@@ -468,7 +468,10 @@ class YoutubeBaseInfoExtractor(InfoExtractor):
         'si', 'th', 'lo', 'my', 'ka', 'am', 'km', 'zh-CN', 'zh-TW', 'zh-HK', 'ja', 'ko',
     ]
 
-    _IGNORED_WARNINGS = {'Unavailable videos will be hidden during playback'}
+    _IGNORED_WARNINGS = {
+        'Unavailable videos will be hidden during playback',
+        'Unavailable videos are hidden',
+    }
 
     _YT_HANDLE_RE = r'@[\w.-]{3,30}'  # https://support.google.com/youtube/answer/11585688?hl=en
     _YT_CHANNEL_UCID_RE = r'UC[\w-]{22}'
@@ -3127,7 +3130,8 @@ class YoutubeIE(YoutubeBaseInfoExtractor):
 
     def _extract_n_function_name(self, jscode):
         funcname, idx = self._search_regex(
-            r'\.get\("n"\)\)&&\(b=(?P<nfunc>[a-zA-Z0-9$]+)(?:\[(?P<idx>\d+)\])?\([a-zA-Z0-9]\)',
+            r'''(?x)(?:\.get\("n"\)\)&&\(b=|b=String\.fromCharCode\(110\),c=a\.get\(b\)\)&&\(c=)
+            (?P<nfunc>[a-zA-Z0-9$]+)(?:\[(?P<idx>\d+)\])?\([a-zA-Z0-9]\)''',
             jscode, 'Initial JS player n function name', group=('nfunc', 'idx'))
         if not idx:
             return funcname
@@ -3147,17 +3151,7 @@ class YoutubeIE(YoutubeBaseInfoExtractor):
 
         func_name = self._extract_n_function_name(jscode)
 
-        # For redundancy
-        func_code = self._search_regex(
-            rf'''(?xs){func_name}\s*=\s*function\s*\((?P<var>[\w$]+)\)\s*
-                     # NB: The end of the regex is intentionally kept strict
-                     {{(?P<code>.+?}}\s*return\ [\w$]+.join\(""\))}};''',
-            jscode, 'nsig function', group=('var', 'code'), default=None)
-        if func_code:
-            func_code = ([func_code[0]], func_code[1])
-        else:
-            self.write_debug('Extracting nsig function with jsinterp')
-            func_code = jsi.extract_function_code(func_name)
+        func_code = jsi.extract_function_code(func_name)
 
         self.cache.store('youtube-nsig', player_id, func_code)
         return jsi, player_id, func_code

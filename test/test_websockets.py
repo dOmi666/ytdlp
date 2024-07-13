@@ -61,6 +61,10 @@ def process_request(self, request):
             return websockets.http11.Response(
                 status.value, status.phrase, websockets.datastructures.Headers([('Location', '/')]), b'')
         return self.protocol.reject(status.value, status.phrase)
+    elif request.path.startswith('/get_cookie'):
+        response = self.protocol.accept(request)
+        response.headers['Set-Cookie'] = 'test=ytdlp'
+        return response
     return self.protocol.accept(request)
 
 
@@ -166,6 +170,50 @@ class TestWebsSocketRequestHandlerConformance:
                 ws_validate_and_send(rh, Request(self.bad_wss_host))
             assert not issubclass(exc_info.type, CertificateVerifyError)
 
+    # TODO: implement for websockets
+    # def test_legacy_ssl_extension(self, handler):
+    #     # HTTPS server with old ciphers
+    #     # XXX: is there a better way to test this than to create a new server?
+    #     https_httpd = http.server.ThreadingHTTPServer(
+    #         ('127.0.0.1', 0), HTTPTestRequestHandler)
+    #     sslctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    #     sslctx.set_ciphers('TODO: OPENSSL CIPHER STRING SUPPORTED BY "DEFAULT" CIPHERS BUT NOT YT-DLP CIPHER STRING')
+    #     sslctx.load_cert_chain(os.path.join(TEST_DIR, 'testcert.pem'), None)
+    #     https_httpd.socket = sslctx.wrap_socket(https_httpd.socket, server_side=True)
+    #     https_port = http_server_port(https_httpd)
+    #     https_server_thread = threading.Thread(target=https_httpd.serve_forever)
+    #     https_server_thread.daemon = True
+    #     https_server_thread.start()
+    #
+    #     with handler(verify=False) as rh:
+    #         res = validate_and_send(rh, Request(f'https://127.0.0.1:{https_port}/headers', extensions={'legacy_ssl': True}))
+    #         assert res.status == 200
+    #         res.close()
+    #
+    #         # Ensure only applies to request extension
+    #         with pytest.raises(SSLError, match=r'<ssl error>') as exc_info:
+    #             validate_and_send(rh, Request(f'https://127.0.0.1:{https_port}/headers'))
+    #         assert not issubclass(exc_info.type, SSLError)
+    #
+    # def test_legacy_ssl_support(self, handler):
+    #     # HTTPS server with old ciphers
+    #     # XXX: is there a better way to test this than to create a new server?
+    #     https_httpd = http.server.ThreadingHTTPServer(
+    #         ('127.0.0.1', 0), HTTPTestRequestHandler)
+    #     sslctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    #     sslctx.set_ciphers('TODO: OPENSSL CIPHER STRING SUPPORTED BY "DEFAULT" CIPHERS BUT NOT YT-DLP CIPHER STRING')
+    #     sslctx.load_cert_chain(os.path.join(TEST_DIR, 'testcert.pem'), None)
+    #     https_httpd.socket = sslctx.wrap_socket(https_httpd.socket, server_side=True)
+    #     https_port = http_server_port(https_httpd)
+    #     https_server_thread = threading.Thread(target=https_httpd.serve_forever)
+    #     https_server_thread.daemon = True
+    #     https_server_thread.start()
+    #
+    #     with handler(verify=False, legacy_ssl_support=True) as rh:
+    #         res = validate_and_send(rh, Request(f'https://127.0.0.1:{https_port}/headers', extensions={'legacy_ssl': True}))
+    #         assert res.status == 200
+    #         res.close()
+
     @pytest.mark.parametrize('path,expected', [
         # Unicode characters should be encoded with uppercase percent-encoding
         ('/中文', '/%E4%B8%AD%E6%96%87'),
@@ -246,6 +294,40 @@ class TestWebsSocketRequestHandlerConformance:
             ws = ws_validate_and_send(rh, Request(self.ws_base_url, extensions={'cookiejar': cookiejar}))
             ws.send('headers')
             assert json.loads(ws.recv())['cookie'] == 'test=ytdlp'
+            ws.close()
+
+    @pytest.mark.skip_handler('Websockets', 'Set-Cookie not supported by websockets')
+    def test_get_cookie(self, handler):
+        with handler() as rh:
+            ws = ws_validate_and_send(rh, Request(f'{self.ws_base_url}/get_cookie_no_domain'))
+            ws.send('headers')
+            assert json.loads(ws.recv())['cookie'] == 'test=ytdlp'
+            ws.close()
+
+    @pytest.mark.skip_handler('Websockets', 'Set-Cookie not supported by websockets')
+    def test_cookie_sync_only_cookiejar(self, handler):
+        # Ensure that cookies are ONLY being handled by the cookiejar
+        with handler() as rh:
+            ws_validate_and_send(rh, Request(f'{self.ws_base_url}/get_cookie', extensions={'cookiejar': YoutubeDLCookieJar()}))
+            ws = ws_validate_and_send(rh, Request(self.ws_base_url, extensions={'cookiejar': YoutubeDLCookieJar()}))
+            ws.send('headers')
+            assert 'cookie' not in json.loads(ws.recv())
+            ws.close()
+
+    @pytest.mark.skip_handler('Websockets', 'Set-Cookie not supported by websockets')
+    def test_cookie_sync_delete_cookie(self, handler):
+        # Ensure that cookies are ONLY being handled by the cookiejar
+        cookiejar = YoutubeDLCookieJar()
+        with handler(verbose=True, cookiejar=cookiejar) as rh:
+            ws_validate_and_send(rh, Request(f'{self.ws_base_url}/get_cookie'))
+            ws = ws_validate_and_send(rh, Request(self.ws_base_url))
+            ws.send('headers')
+            assert json.loads(ws.recv())['cookie'] == 'test=ytdlp'
+            ws.close()
+            cookiejar.clear_session_cookies()
+            ws = ws_validate_and_send(rh, Request(self.ws_base_url))
+            ws.send('headers')
+            assert 'cookie' not in json.loads(ws.recv())
             ws.close()
 
     def test_source_address(self, handler):
